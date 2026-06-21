@@ -111,6 +111,25 @@ body {
   color: #fff;
 }
 
+.search-row {
+  margin-top: 16px;
+  justify-content: space-between;
+}
+.search-input {
+  flex: 1;
+  min-width: 220px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 9px 12px;
+  font-family: inherit;
+  font-size: 0.9rem;
+}
+.search-input::placeholder {
+  color: var(--muted);
+}
+
 /* Buttons */
 .btn {
   border: 1px solid var(--border);

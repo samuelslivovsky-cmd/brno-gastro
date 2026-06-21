@@ -3,6 +3,7 @@ import { Place, Review } from "../types";
 type Props = {
   place: Place;
   review?: Review;
+  onReview?: (place: Place) => void;
   children?: React.ReactNode;
 };
 
@@ -16,7 +17,7 @@ export function Stars({ value }: { value: number }) {
   );
 }
 
-export function PlaceCard({ place, review, children }: Props) {
+export function PlaceCard({ place, review, onReview, children }: Props) {
   return (
     <article className="card place-card">
       {place.photoUrl && (
@@ -42,6 +43,11 @@ export function PlaceCard({ place, review, children }: Props) {
               {new Date(review.date).toLocaleDateString("sk-SK")}
             </div>
           </div>
+        )}
+        {!review && onReview && (
+          <button className="btn primary" onClick={() => onReview(place)}>
+            Boli sme tam → recenzia
+          </button>
         )}
         {children}
       </div>

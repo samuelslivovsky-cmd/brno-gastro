@@ -9,7 +9,7 @@ import {
 } from "./lib/maps";
 import { getIsoWeek, pickRandom } from "./lib/week";
 import { WeeklyPick } from "./components/WeeklyPick";
-import { PlaceList } from "./components/PlaceList";
+import { ListFilter, PlaceList } from "./components/PlaceList";
 import { ReviewForm } from "./components/ReviewForm";
 
 export default function App() {
@@ -18,6 +18,8 @@ export default function App() {
   const [progress, setProgress] = useState<FetchProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reviewing, setReviewing] = useState<Place | null>(null);
+  const [search, setSearch] = useState("");
+  const [listFilter, setListFilter] = useState<ListFilter>("all");
 
   // Perzistencia každej zmeny stavu.
   useEffect(() => {
@@ -31,16 +33,31 @@ export default function App() {
     () => applyFilters(state.places, state.filters),
     [state.places, state.filters]
   );
+  const query = search.trim().toLowerCase();
+  const matchesSearch = useMemo(() => {
+    return (p: Place) =>
+      query === "" ||
+      p.name.toLowerCase().includes(query) ||
+      p.address.toLowerCase().includes(query);
+  }, [query]);
+
   const unvisited = useMemo(
-    () => filtered.filter((p) => !state.visited[p.id]),
-    [filtered, state.visited]
+    () => filtered.filter((p) => !state.visited[p.id]).filter(matchesSearch),
+    [filtered, state.visited, matchesSearch]
   );
   const visitedList = useMemo(
     () =>
       state.places
         .filter((p) => state.visited[p.id])
+        .filter(matchesSearch)
         .map((p) => ({ place: p, review: state.visited[p.id] as Review })),
-    [state.places, state.visited]
+    [state.places, state.visited, matchesSearch]
+  );
+
+  // Pool pre tip týždňa — nezávislý od vyhľadávania.
+  const poolEmpty = useMemo(
+    () => filtered.filter((p) => !state.visited[p.id]).length === 0,
+    [filtered, state.visited]
   );
 
   // Vyriešenie tipu týždňa: stabilný počas týždňa, preskočí navštívené.
@@ -237,18 +254,51 @@ export default function App() {
             ))}
           </div>
         </div>
+
+        <div className="toolbar-row search-row">
+          <input
+            className="search-input"
+            type="search"
+            placeholder="🔍 Hľadať podnik podľa názvu alebo adresy…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <div className="type-filters">
+            {(
+              [
+                ["all", "Všetky"],
+                ["unvisited", "Nenavštívené"],
+                ["visited", "Navštívené"],
+              ] as [ListFilter, string][]
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                className={`chip ${listFilter === value ? "active" : ""}`}
+                onClick={() => setListFilter(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </section>
 
       <WeeklyPick
         place={weeklyPlace}
         isoWeek={isoWeek}
         reviewedThisWeek={reviewedThisWeek}
-        poolEmpty={unvisited.length === 0}
+        poolEmpty={poolEmpty}
         onVisited={() => weeklyPlace && setReviewing(weeklyPlace)}
         onPickNext={pickNext}
       />
 
-      <PlaceList unvisited={unvisited} visited={visitedList} />
+      <PlaceList
+        unvisited={unvisited}
+        visited={visitedList}
+        listFilter={listFilter}
+        search={search.trim()}
+        onReview={(p) => setReviewing(p)}
+      />
 
       {reviewing && (
         <ReviewForm
