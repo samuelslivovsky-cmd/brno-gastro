@@ -11,13 +11,28 @@ const BRNO_BOX = {
   east: 16.7,
 };
 
-// Polomer hľadania pre jeden bod mriežky (v metroch).
-const SEARCH_RADIUS_M = 1200;
+// Počiatočná hrubá mriežka (base, hĺbka 0) — krok v stupňoch.
+// 1 stupeň lat ≈ 111 km; 1 stupeň lng na 49° ≈ 73 km. ~1,5 km bunky.
+const BASE_LAT_STEP = 0.0135;
+const BASE_LNG_STEP = 0.0205;
 
-// Krok mriežky v stupňoch (zvolený tak, aby sa kruhy prekrývali a pokryli plochu).
-// 1 stupeň lat ≈ 111 km; 1 stupeň lng na 49° ≈ 73 km.
-const LAT_STEP = 0.0135; // ~1.5 km
-const LNG_STEP = 0.0205; // ~1.5 km
+// Ak volanie vráti tento počet, oblasť je pravdepodobne orezaná → rozdeliť.
+const CAP = 20;
+
+export type Thoroughness = "cheap" | "balanced" | "max";
+
+// Úrovne dôkladnosti: maxDepth = koľko úrovní delenia nad base mriežkou,
+// maxCalls = globálny strop volaní (ochrana pred drahým behom).
+export const CRAWL_LEVELS: Record<
+  Thoroughness,
+  { maxDepth: number; maxCalls: number }
+> = {
+  cheap: { maxDepth: 1, maxCalls: 100 },
+  balanced: { maxDepth: 3, maxCalls: 250 },
+  max: { maxDepth: 5, maxCalls: 600 },
+};
+
+type Box = { south: number; north: number; west: number; east: number };
 
 export function hasApiKey(): boolean {
   return Boolean(API_KEY && API_KEY.trim());
@@ -36,15 +51,46 @@ async function loadPlacesLibrary(): Promise<typeof google.maps.places> {
   return loaderPromise;
 }
 
-/** Vygeneruje body mriežky pokrývajúce Brno. */
-function generateGrid(): { lat: number; lng: number }[] {
-  const points: { lat: number; lng: number }[] = [];
-  for (let lat = BRNO_BOX.south; lat <= BRNO_BOX.north; lat += LAT_STEP) {
-    for (let lng = BRNO_BOX.west; lng <= BRNO_BOX.east; lng += LNG_STEP) {
-      points.push({ lat, lng });
+/** Rozdelí veľký bounding box na počiatočné base bunky. */
+function baseBoxes(): Box[] {
+  const boxes: Box[] = [];
+  for (let lat = BRNO_BOX.south; lat < BRNO_BOX.north; lat += BASE_LAT_STEP) {
+    for (let lng = BRNO_BOX.west; lng < BRNO_BOX.east; lng += BASE_LNG_STEP) {
+      boxes.push({
+        south: lat,
+        north: Math.min(lat + BASE_LAT_STEP, BRNO_BOX.north),
+        west: lng,
+        east: Math.min(lng + BASE_LNG_STEP, BRNO_BOX.east),
+      });
     }
   }
-  return points;
+  return boxes;
+}
+
+/** Stred boxu. */
+function boxCenter(b: Box): { lat: number; lng: number } {
+  return { lat: (b.south + b.north) / 2, lng: (b.west + b.east) / 2 };
+}
+
+/** Polomer kruhu (v metroch), ktorý pokryje celý box = polovica uhlopriečky. */
+function boxRadiusM(b: Box): number {
+  const c = boxCenter(b);
+  const dLat = ((b.north - b.south) / 2) * 111_000;
+  const dLng =
+    ((b.east - b.west) / 2) * 111_000 * Math.cos((c.lat * Math.PI) / 180);
+  return Math.sqrt(dLat * dLat + dLng * dLng);
+}
+
+/** Rozdelí box na 4 kvadranty. */
+function quadrants(b: Box): Box[] {
+  const midLat = (b.south + b.north) / 2;
+  const midLng = (b.west + b.east) / 2;
+  return [
+    { south: b.south, north: midLat, west: b.west, east: midLng },
+    { south: b.south, north: midLat, west: midLng, east: b.east },
+    { south: midLat, north: b.north, west: b.west, east: midLng },
+    { south: midLat, north: b.north, west: midLng, east: b.east },
+  ];
 }
 
 type RawPlace = google.maps.places.Place;
@@ -70,58 +116,84 @@ function toPlace(p: RawPlace): Place | null {
 }
 
 export type FetchProgress = {
-  done: number;
-  total: number;
-  found: number;
+  calls: number; // počet doteraz vykonaných volaní
+  found: number; // počet unikátnych nájdených podnikov
+  capped: number; // koľko oblastí bolo orezaných (vrátilo 20) a delilo sa
 };
 
+const FIELDS = [
+  "id",
+  "displayName",
+  "rating",
+  "userRatingCount",
+  "formattedAddress",
+  "location",
+  "googleMapsURI",
+  "primaryType",
+  "photos",
+];
+
 /**
- * Pretiluje Brno mriežkou a cez Places API načíta gastro podniky.
- * Výsledky dedupne podľa id. Filtrovanie (rating/recenzie/typy) sa robí
- * až v UI cez applyFilters, aby sa filtre dali meniť bez nového fetchu.
+ * Adaptívne („quadtree“) stiahnutie gastro podnikov v Brne cez Places API.
+ *
+ * Pre každý box spustí searchNearby. Ak vráti CAP (=20) výsledkov, oblasť je
+ * pravdepodobne orezaná → rozdelí sa na 4 menšie a prehľadá znova, kým
+ * oblasť nevracia menej než 20, nedosiahne maxDepth alebo sa neminie maxCalls.
+ * Výsledky dedupne podľa id. Filtre (rating/recenzie/typy) sa aplikujú až v UI.
  */
 export async function fetchBrnoPlaces(
+  thoroughness: Thoroughness = "balanced",
   onProgress?: (p: FetchProgress) => void
 ): Promise<Place[]> {
   const places = await loadPlacesLibrary();
-  const grid = generateGrid();
+  const { maxDepth, maxCalls } = CRAWL_LEVELS[thoroughness];
   const byId = new Map<string, Place>();
+  let calls = 0;
+  let capped = 0;
 
-  const fields = [
-    "id",
-    "displayName",
-    "rating",
-    "userRatingCount",
-    "formattedAddress",
-    "location",
-    "googleMapsURI",
-    "primaryType",
-    "photos",
-  ];
-
-  for (let i = 0; i < grid.length; i++) {
-    const point = grid[i];
+  async function searchBox(box: Box): Promise<number> {
+    calls++;
     try {
       const { places: results } = await places.Place.searchNearby({
-        fields,
+        fields: FIELDS,
         locationRestriction: {
-          center: new google.maps.LatLng(point.lat, point.lng),
-          radius: SEARCH_RADIUS_M,
+          center: new google.maps.LatLng(boxCenter(box).lat, boxCenter(box).lng),
+          radius: boxRadiusM(box),
         },
         includedTypes: [...GASTRO_TYPES],
-        maxResultCount: 20,
-        rankPreference:
-          google.maps.places.SearchNearbyRankPreference.POPULARITY,
+        maxResultCount: CAP,
+        rankPreference: google.maps.places.SearchNearbyRankPreference.POPULARITY,
       });
       for (const raw of results) {
         const place = toPlace(raw);
         if (place && !byId.has(place.id)) byId.set(place.id, place);
       }
+      onProgress?.({ calls, found: byId.size, capped });
+      return results.length;
     } catch (err) {
-      // Jednotlivý bod môže zlyhať (rate limit a pod.) — pokračujeme ďalej.
-      console.warn("searchNearby zlyhalo pre bod", point, err);
+      // Jednotlivá oblasť môže zlyhať (rate limit a pod.) — pokračujeme ďalej.
+      console.warn("searchNearby zlyhalo pre box", box, err);
+      onProgress?.({ calls, found: byId.size, capped });
+      return 0;
     }
-    onProgress?.({ done: i + 1, total: grid.length, found: byId.size });
+  }
+
+  async function crawl(box: Box, depth: number): Promise<void> {
+    if (calls >= maxCalls) return;
+    const count = await searchBox(box);
+    // Ak je oblasť orezaná a máme rozpočet aj hĺbku, rozdelíme ju.
+    if (count >= CAP && depth < maxDepth && calls < maxCalls) {
+      capped++;
+      for (const q of quadrants(box)) {
+        if (calls >= maxCalls) break;
+        await crawl(q, depth + 1);
+      }
+    }
+  }
+
+  for (const box of baseBoxes()) {
+    if (calls >= maxCalls) break;
+    await crawl(box, 0);
   }
 
   return [...byId.values()];

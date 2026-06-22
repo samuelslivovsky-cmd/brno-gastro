@@ -6,6 +6,7 @@ import {
   fetchBrnoPlaces,
   FetchProgress,
   hasApiKey,
+  Thoroughness,
 } from "./lib/maps";
 import { getIsoWeek, pickRandom } from "./lib/week";
 import { WeeklyPick } from "./components/WeeklyPick";
@@ -20,6 +21,7 @@ export default function App() {
   const [reviewing, setReviewing] = useState<Place | null>(null);
   const [search, setSearch] = useState("");
   const [listFilter, setListFilter] = useState<ListFilter>("all");
+  const [thoroughness, setThoroughness] = useState<Thoroughness>("balanced");
 
   // Perzistencia každej zmeny stavu.
   useEffect(() => {
@@ -105,7 +107,7 @@ export default function App() {
     setLoading(true);
     setProgress(null);
     try {
-      const places = await fetchBrnoPlaces((p) => setProgress(p));
+      const places = await fetchBrnoPlaces(thoroughness, (p) => setProgress(p));
       setState((prev) => ({
         ...prev,
         places,
@@ -206,14 +208,33 @@ export default function App() {
           </button>
         </div>
 
+        <div className="toolbar-row thoroughness-row">
+          <span className="muted small">Dôkladnosť sťahovania:</span>
+          <div className="type-filters">
+            {(
+              [
+                ["cheap", "Lacné"],
+                ["balanced", "Vyvážené"],
+                ["max", "Maximálne"],
+              ] as [Thoroughness, string][]
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                className={`chip ${thoroughness === value ? "active" : ""}`}
+                onClick={() => setThoroughness(value)}
+                disabled={loading}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {loading && progress && (
           <div className="progress">
-            <div
-              className="progress-bar"
-              style={{ width: `${(progress.done / progress.total) * 100}%` }}
-            />
+            <div className="progress-bar indeterminate" />
             <span className="muted small">
-              {progress.done}/{progress.total} oblastí · nájdených{" "}
+              Prehľadávam… {progress.calls} oblastí · nájdených{" "}
               {progress.found}
             </span>
           </div>

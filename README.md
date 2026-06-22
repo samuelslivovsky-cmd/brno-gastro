@@ -47,13 +47,26 @@ trieda). Žiadny server.
 ## Ako to funguje
 
 Places API vráti max 20 výsledkov na jedno volanie, takže „celé Brno“ sa nedá
-získať jedným dotazom. Appka preto **rozdelí mesto na mriežku bodov** a pre
-každý spustí `searchNearby` s malým polomerom, výsledky **dedupne podľa
-place ID** a vyfiltruje podľa min. hodnotenia a počtu recenzií.
+získať jedným dotazom. Appka preto používa **adaptívne delenie (quadtree)**:
+mesto pokryje hrubou mriežkou a pre každú oblasť spustí `searchNearby`. Keď
+oblasť vráti presne 20 výsledkov (= pravdepodobne orezaná, je v nej viac
+podnikov), **rozdelí ju na 4 menšie** a prehľadá znova — a opakuje, kým žiadna
+oblasť nevracia 20. Tým sa zachytia aj menšie podniky v hustom centre, ktoré
+by pri fixnej mriežke vypadli. Výsledky **dedupne podľa place ID**; filtre
+(min. hodnotenie / recenzie / typy) sa aplikujú až v UI.
+
+Prepínačom **Dôkladnosť sťahovania** zvolíš kompromis úplnosť vs. počet volaní:
+
+| Úroveň     | Hĺbka delenia | Strop volaní |
+| ---------- | ------------- | ------------ |
+| Lacné      | plytké        | ~100         |
+| Vyvážené   | stredné       | ~250         |
+| Maximálne  | hlboké        | ~600         |
 
 > ⚠️ **Cena:** každé načítanie spustí desiatky až stovky volaní Places API.
-> Preto sa fetch spúšťa **iba manuálne** tlačidlom a výsledky sa cache-ujú v
-> prehliadači. Obnovuj zoznam len keď to potrebuješ.
+> Google poskytuje mesačný free kredit, ale dôkladnejšie sťahovanie ho míňa
+> rýchlejšie. Preto sa fetch spúšťa **iba manuálne** tlačidlom a výsledky sa
+> cache-ujú v prehliadači. Obnovuj zoznam len keď to potrebuješ.
 
 ## Build
 

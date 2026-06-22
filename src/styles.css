@@ -180,6 +180,29 @@ body {
   transition: width 0.2s;
   min-width: 4px;
 }
+.progress-bar.indeterminate {
+  width: 120px;
+  background: linear-gradient(
+    90deg,
+    var(--panel-2) 0%,
+    var(--accent-2) 50%,
+    var(--panel-2) 100%
+  );
+  background-size: 200% 100%;
+  animation: progress-slide 1.2s linear infinite;
+}
+@keyframes progress-slide {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.thoroughness-row {
+  margin-top: 12px;
+}
 
 /* Weekly */
 .weekly {
